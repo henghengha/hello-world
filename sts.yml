@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  selector:
+    matchLabels:
+      name: redis
+  serviceName: redis-nodes
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        name: redis
+    spec:
+      serviceAccount: redis-sa
+      terminationGracePeriodSeconds: 10
+      containers:
+        # Redis
+        - name: redis-node
+          image: redis:3.2
+          command:
+            - redis-server
+          args:
+            - /config/node.conf
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 1Gi
+          livenessProbe: &healthcheck
+            exec:
+              command: [ "redis-cli", "ping" ]
+                #          readinessProbe:
+                #            <<: *healthcheck
+
+        # Sentinel
+        - name: redis-sentinel
+          image: redis:3.2
+          command: [ "bash", "-c", "touch sentinel.conf && redis-sentinel sentinel.conf" ]
+          ports:
+            - name: sentinel
+              containerPort: 26379
+          resources:
+            requests:
+              cpu: 25m
+              memory: 50Mi
+          livenessProbe: &healthcheck
+            exec:
+              command: [ "redis-cli", "-p", "26379", "ping" ]
+                #          readinessProbe:
+                #            <<: *healthcheck
+
+        # Sidecar
+        - name: redis-sidecar
+          image: commercialtribe/redis-sentinel-sidecar:v20170425.0
+          imagePullPolicy: Always
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: pod-info
+              mountPath: /etc/pod-info
+                #          readinessProbe:
+                #            exec:
+                #              command: [ "cat", "booted" ]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 50Mi
+      volumes:
+        - name: pod-info
+          downwardAPI:
+            items:
+              - path: labels
+                fieldRef:
+                  fieldPath: metadata.labels
+        - name: redis-config
+          configMap:
+            name: redis-sentinel
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: ebs-sc
+        resources:
+          requests:
+            storage: 4Gi
